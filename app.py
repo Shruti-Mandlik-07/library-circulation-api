@@ -18,8 +18,36 @@ if os.path.isdir(dist_folder):
 else:
     app = Flask(__name__)
 
-# Enable CORS for all routes under /api/
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# Enable full, unrestricted CORS for everything (all routes, all origins, all methods, all headers)
+CORS(
+    app,
+    resources={r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+        "allow_headers": "*"
+    }},
+    supports_credentials=False
+)
+
+@app.before_request
+def handle_preflight():
+    """Immediately respond to preflight OPTIONS requests from any origin."""
+    if request.method == "OPTIONS":
+        response = app.make_default_options_response()
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Max-Age"] = "86400"
+        return response
+
+@app.after_request
+def add_cors_headers(response):
+    """Ensure every outgoing response has full permissive CORS headers attached."""
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Expose-Headers"] = "*"
+    return response
 
 KEYSPACE = os.environ.get("ASTRA_DB_KEYSPACE", "default_keyspace")
 
@@ -40,17 +68,27 @@ def get_database():
     return client.get_database(endpoint, keyspace=KEYSPACE)
 
 
+KNOWN_COLLECTIONS = set()
+
 def get_collection(name):
+    """Retrieve an Astra DB collection, auto-creating it if it does not exist."""
     db = get_database()
-    try:
-        return db.get_collection(name)
-    except Exception:
-        # Auto-create collection if it does not exist yet
+    global KNOWN_COLLECTIONS
+
+    if not KNOWN_COLLECTIONS:
         try:
-            db.create_collection(name)
+            KNOWN_COLLECTIONS = {c.name for c in db.list_collections()}
         except Exception:
             pass
-        return db.get_collection(name)
+
+    if name not in KNOWN_COLLECTIONS:
+        try:
+            db.create_collection(name)
+            KNOWN_COLLECTIONS.add(name)
+        except Exception:
+            pass
+
+    return db.get_collection(name)
 
 
 def clean_records(records):
@@ -78,13 +116,16 @@ def api_info():
         "endpoints": [
             "/api/stats",
             "/api/books",
+            "/api/books/<book_id>",
             "/api/borrow",
             "/api/borrow-records",
             "/api/return/<record_id>",
             "/api/top-books",
             "/api/material-types",
             "/api/monthly-trends",
-            "/api/analytics"
+            "/api/analytics",
+            "/api/data/<collection_name>",
+            "/api/seed"
         ]
     })
 
@@ -138,36 +179,36 @@ def list_books():
 
 @app.route("/api/books", methods=["POST"])
 def add_book():
-    """Add a new book to the library catalog."""
+    """Add a new book to the library catalog with permissive field handling."""
     try:
         data = request.get_json(silent=True) or {}
 
-        title = str(data.get("title", "")).strip()
-        author = str(data.get("author", "")).strip()
+        # Allow flexible title and fields
+        title = str(data.get("title", "")).strip() or "Untitled Book"
+        author = str(data.get("author", "")).strip() or "Unknown Author"
         category = str(data.get("category", "")).strip() or "General"
         isbn = str(data.get("isbn", "")).strip()
-
-        if not title:
-            return jsonify({"error": "Book title is required"}), 400
 
         try:
             quantity = int(data.get("quantity", 1))
         except (ValueError, TypeError):
-            return jsonify({"error": "Quantity must be an integer >= 1"}), 400
+            quantity = 1
 
         if quantity < 1:
-            return jsonify({"error": "Quantity must be at least 1"}), 400
+            quantity = 1
 
-        book = {
-            "book_id": str(uuid.uuid4()),
+        # Build book document preserving all user-supplied custom properties
+        book = dict(data)
+        book.update({
+            "book_id": str(data.get("book_id") or uuid.uuid4()),
             "title": title,
-            "author": author or "Unknown Author",
+            "author": author,
             "category": category,
             "isbn": isbn,
             "total_quantity": quantity,
-            "available_quantity": quantity,
-            "added_date": str(date.today())
-        }
+            "available_quantity": int(data.get("available_quantity", quantity)),
+            "added_date": str(data.get("added_date") or date.today())
+        })
 
         coll = get_collection("library_books")
         coll.insert_one(book)
@@ -176,6 +217,25 @@ def add_book():
             "message": "Book added successfully",
             "book": clean_records([book])[0]
         }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/books/<book_id>", methods=["PUT", "PATCH"])
+def update_book(book_id):
+    """Update existing book details with any modified fields."""
+    try:
+        data = request.get_json(silent=True) or {}
+        data.pop("_id", None)
+        data.pop("book_id", None)
+
+        coll = get_collection("library_books")
+        coll.update_one({"book_id": book_id}, {"$set": data})
+        updated = coll.find_one({"book_id": book_id})
+        return jsonify({
+            "message": "Book updated successfully",
+            "book": clean_records([updated])[0] if updated else None
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -289,20 +349,22 @@ def borrow_book():
         data = request.get_json(silent=True) or {}
 
         book_id = str(data.get("book_id", "")).strip()
-        borrower = str(data.get("borrower", "")).strip()
-
-        if not book_id:
-            return jsonify({"error": "Book selection is required"}), 400
-        if not borrower:
-            return jsonify({"error": "Borrower name/ID is required"}), 400
+        title_query = str(data.get("title", "")).strip()
+        borrower = str(data.get("borrower", "")).strip() or "Library Member"
 
         books_coll = get_collection("library_books")
         records_coll = get_collection("borrow_records")
 
-        book = books_coll.find_one({"book_id": book_id})
+        book = None
+        if book_id:
+            book = books_coll.find_one({"book_id": book_id})
+        if not book and title_query:
+            book = books_coll.find_one({"title": title_query})
+
         if not book:
             return jsonify({"error": "Selected book was not found in catalog"}), 404
 
+        book_id = book.get("book_id")
         available = int(book.get("available_quantity", 0))
         if available < 1:
             return jsonify({"error": "Sorry, no copies of this title are currently available"}), 400
@@ -316,17 +378,18 @@ def borrow_book():
         today = date.today()
         due = today + timedelta(days=14)
 
-        record = {
+        record = dict(data)
+        record.update({
             "record_id": str(uuid.uuid4()),
             "book_id": book_id,
             "title": book.get("title", ""),
             "author": book.get("author", ""),
             "borrower": borrower,
-            "borrow_date": str(today),
-            "due_date": str(due),
+            "borrow_date": str(data.get("borrow_date") or today),
+            "due_date": str(data.get("due_date") or due),
             "return_date": None,
             "status": "Borrowed"
-        }
+        })
 
         try:
             records_coll.insert_one(record)
@@ -421,52 +484,87 @@ def monthly_trends():
 
 @app.route("/api/analytics", methods=["POST"])
 def add_analytics_record():
-    """Allow storing custom circulation analytics data (top book, material type, or monthly trend)."""
+    """Allow storing custom circulation analytics data (accepts any analysis type or metric)."""
     try:
         data = request.get_json(silent=True) or {}
-        analysis_type = data.get("analysis_type", "").strip()
-
-        if analysis_type not in ["top_books", "material_type", "monthly_trend"]:
-            return jsonify({
-                "error": "analysis_type must be one of: 'top_books', 'material_type', 'monthly_trend'"
-            }), 400
+        analysis_type = str(data.get("analysis_type", "")).strip() or "custom_metric"
 
         coll = get_collection("checkout_analytics")
-        new_doc = {"analysis_type": analysis_type}
 
         try:
             total_checkouts = int(data.get("total_checkouts", 1))
         except (ValueError, TypeError):
-            return jsonify({"error": "total_checkouts must be a valid integer"}), 400
+            total_checkouts = 1
 
+        new_doc = dict(data)
+        new_doc["analysis_type"] = analysis_type
         new_doc["total_checkouts"] = total_checkouts
 
         if analysis_type == "top_books":
-            title = str(data.get("title", "")).strip()
-            if not title:
-                return jsonify({"error": "Title is required for top_books"}), 400
-            new_doc["title"] = title
-
+            new_doc["title"] = str(data.get("title", "")).strip() or "Untitled Title"
         elif analysis_type == "material_type":
-            materialtype = str(data.get("materialtype", "")).strip().upper()
-            if not materialtype:
-                return jsonify({"error": "materialtype is required for material_type"}), 400
-            new_doc["materialtype"] = materialtype
+            new_doc["materialtype"] = str(data.get("materialtype", "")).strip().upper() or "GENERAL"
             new_doc["record_count"] = int(data.get("record_count", 1))
-
         elif analysis_type == "monthly_trend":
-            year = int(data.get("checkoutyear", date.today().year))
-            month = int(data.get("checkoutmonth", date.today().month))
-            if not (1 <= month <= 12):
-                return jsonify({"error": "checkoutmonth must be between 1 and 12"}), 400
-            new_doc["checkoutyear"] = year
-            new_doc["checkoutmonth"] = month
+            new_doc["checkoutyear"] = int(data.get("checkoutyear", date.today().year))
+            new_doc["checkoutmonth"] = int(data.get("checkoutmonth", date.today().month))
 
         coll.insert_one(new_doc)
         return jsonify({
             "message": "Analytics record added successfully",
             "record": clean_records([new_doc])[0]
         }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------- GENERIC DYNAMIC DATA ACCESS (ALLOW EVERYTHING) ----------------
+
+@app.route("/api/data/<collection_name>", methods=["GET"])
+def get_any_collection(collection_name):
+    """Retrieve up to 500 records from ANY collection in Astra DB."""
+    try:
+        coll = get_collection(collection_name)
+        records = list(coll.find({}, limit=500))
+        return jsonify(clean_records(records))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/data/<collection_name>", methods=["POST"])
+def post_any_collection(collection_name):
+    """Insert ANY arbitrary JSON document into ANY collection in Astra DB."""
+    try:
+        data = request.get_json(silent=True) or {}
+        if not data:
+            data = {"created_at": str(date.today())}
+
+        doc = dict(data)
+        if not any(k in doc for k in ("id", "doc_id", "book_id", "record_id")):
+            doc["doc_id"] = str(uuid.uuid4())
+
+        coll = get_collection(collection_name)
+        coll.insert_one(doc)
+        return jsonify({
+            "message": f"Document stored successfully into '{collection_name}'",
+            "document": clean_records([doc])[0]
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/data/<collection_name>/<doc_id>", methods=["DELETE"])
+def delete_any_collection_doc(collection_name, doc_id):
+    """Delete a document from any collection by doc_id, book_id, record_id, or _id."""
+    try:
+        coll = get_collection(collection_name)
+        coll.delete_one({"$or": [
+            {"doc_id": doc_id},
+            {"book_id": doc_id},
+            {"record_id": doc_id},
+            {"id": doc_id}
+        ]})
+        return jsonify({"message": f"Deleted document '{doc_id}' from '{collection_name}'", "deleted": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

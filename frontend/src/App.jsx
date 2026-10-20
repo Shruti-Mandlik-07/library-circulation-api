@@ -48,7 +48,10 @@ const CATEGORIES = [
   "History & Politics",
   "Mystery & Thriller",
   "Audiobook",
+  "Comics & Manga",
+  "Philosophy",
   "General",
+  "Custom / Other"
 ];
 
 function App() {
@@ -1209,8 +1212,27 @@ function App() {
                       <option value="top_books">Top Checked-Out Title</option>
                       <option value="material_type">Material Type / Format</option>
                       <option value="monthly_trend">Monthly Circulation Trend</option>
+                      <option value="custom_metric">Custom Metric / Category</option>
                     </select>
                   </div>
+
+                  {analyticsForm.analysis_type === "custom_metric" && (
+                    <div className="form-group flex-2">
+                      <label>Metric Name / Label *</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Digital Audio Downloads, Study Room Bookings"
+                        value={analyticsForm.title || ""}
+                        onChange={(e) =>
+                          setAnalyticsForm({
+                            ...analyticsForm,
+                            title: e.target.value,
+                          })
+                        }
+                        required
+                      />
+                    </div>
+                  )}
 
                   {analyticsForm.analysis_type === "top_books" && (
                     <div className="form-group flex-2">
