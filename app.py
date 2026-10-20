@@ -4,7 +4,9 @@ from flask import Flask, jsonify
 from astrapy import DataAPIClient
 
 app = Flask(__name__)
-
+CORS(app, origins=[
+    "http://localhost:5173"
+])
 def get_collection():
     token = os.environ.get("ASTRA_DB_APPLICATION_TOKEN")
     endpoint = os.environ.get("ASTRA_DB_API_ENDPOINT")
