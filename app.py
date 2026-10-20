@@ -1,3 +1,4 @@
+from flask_cors import CORS
 import os
 from flask import Flask, jsonify
 from astrapy import DataAPIClient
