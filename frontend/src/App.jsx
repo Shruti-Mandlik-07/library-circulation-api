@@ -17,8 +17,8 @@ import {
   BookmarkPlus,
   BarChart3,
   Database,
-  Layers,
   X,
+  UserCheck,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -28,6 +28,7 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
+  Legend,
 } from "recharts";
 import "./App.css";
 
@@ -51,7 +52,7 @@ const CATEGORIES = [
   "Comics & Manga",
   "Philosophy",
   "General",
-  "Custom / Other"
+  "Custom / Other",
 ];
 
 function App() {
@@ -100,6 +101,12 @@ function App() {
   const [isBookModalOpen, setIsBookModalOpen] = useState(false);
   const [isBorrowModalOpen, setIsBorrowModalOpen] = useState(false);
 
+  // Smooth Tab Switcher
+  const handleTabChange = (tabName) => {
+    setActiveTab(tabName);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   // Notification helper
   const notify = (message, type = "success") => {
     setNotification({ message, type });
@@ -136,7 +143,7 @@ function App() {
       if (borrowRes && borrowRes.ok) setBorrowRecords(await borrowRes.json());
     } catch (err) {
       console.error("Failed to load library data:", err);
-      notify("Failed to connect to library database. Check your internet connection.", "error");
+      notify("Failed to connect to database. Check internet connection.", "error");
     } finally {
       setLoading(false);
     }
@@ -165,7 +172,7 @@ function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to add book");
 
-      notify(`📖 Book "${newBook.title}" successfully added!`);
+      notify(`📖 Book "${newBook.title}" successfully added to catalog!`);
       setNewBook({
         title: "",
         author: "",
@@ -208,7 +215,7 @@ function App() {
       return;
     }
     if (!borrowForm.borrower.trim()) {
-      notify("Please enter borrower name or library card ID", "error");
+      notify("Please enter borrower name or card ID", "error");
       return;
     }
 
@@ -244,7 +251,7 @@ function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to return book");
 
-      notify(`✅ "${bookTitle}" marked as returned. Inventory updated!`);
+      notify(`✅ "${bookTitle}" returned! Inventory restocked.`);
       loadAllData();
     } catch (err) {
       notify(err.message, "error");
@@ -320,7 +327,38 @@ function App() {
     });
   }, [borrowRecords, circulationFilter]);
 
-  // Chart data
+  // Borrower / Reader Circulation Analytics Data (WHO ISSUED WHAT)
+  const borrowerChartData = useMemo(() => {
+    const counts = {};
+    borrowRecords.forEach((record) => {
+      const rawName = record.borrower?.trim() || "Library Member";
+      const key = rawName.toLowerCase();
+      if (!counts[key]) {
+        // Pretty display name
+        const displayName = rawName.replace(/\b\w/g, (c) => c.toUpperCase());
+        counts[key] = {
+          name: displayName,
+          total: 0,
+          borrowed: 0,
+          returned: 0,
+          titles: [],
+        };
+      }
+      counts[key].total += 1;
+      if (record.status === "Borrowed") {
+        counts[key].borrowed += 1;
+      } else {
+        counts[key].returned += 1;
+      }
+      if (record.title && !counts[key].titles.includes(record.title)) {
+        counts[key].titles.push(record.title);
+      }
+    });
+
+    return Object.values(counts).sort((a, b) => b.total - a.total);
+  }, [borrowRecords]);
+
+  // Material types chart data
   const materialChartData = useMemo(() => {
     return materials
       .map((item) => ({
@@ -331,6 +369,7 @@ function App() {
       .slice(0, 8);
   }, [materials]);
 
+  // Monthly trends chart data
   const trendChartData = useMemo(() => {
     return trends
       .map((item) => ({
@@ -366,14 +405,14 @@ function App() {
         </div>
       )}
 
-      {/* Top Navigation */}
+      {/* Top Navigation Bar */}
       <nav className="navbar">
-        <div className="brand" onClick={() => setActiveTab("dashboard")}>
+        <div className="brand" onClick={() => handleTabChange("dashboard")}>
           <span className="brand-icon">
-            <BookOpen size={23} />
+            <BookOpen size={22} />
           </span>
-          <div>
-            <span>
+          <div className="brand-text-col">
+            <span className="brand-title">
               little<span className="brand-accent">Library</span>
             </span>
             <span className="brand-sub">Circulation & Cloud DB</span>
@@ -383,27 +422,31 @@ function App() {
         <div className="nav-links">
           <button
             className={`nav-btn ${activeTab === "dashboard" ? "active" : ""}`}
-            onClick={() => setActiveTab("dashboard")}
+            onClick={() => handleTabChange("dashboard")}
           >
-            <BarChart3 size={16} /> Overview & Analytics
+            <BarChart3 size={16} />
+            <span>Overview & Analytics</span>
           </button>
           <button
             className={`nav-btn ${activeTab === "catalog" ? "active" : ""}`}
-            onClick={() => setActiveTab("catalog")}
+            onClick={() => handleTabChange("catalog")}
           >
-            <BookMarked size={16} /> Book Catalog ({books.length})
+            <BookMarked size={16} />
+            <span>Book Catalog ({books.length})</span>
           </button>
           <button
             className={`nav-btn ${activeTab === "circulation" ? "active" : ""}`}
-            onClick={() => setActiveTab("circulation")}
+            onClick={() => handleTabChange("circulation")}
           >
-            <Users size={16} /> Circulation Desk
+            <Users size={16} />
+            <span>Circulation Desk</span>
           </button>
           <button
             className={`nav-btn ${activeTab === "entry" ? "active" : ""}`}
-            onClick={() => setActiveTab("entry")}
+            onClick={() => handleTabChange("entry")}
           >
-            <BookmarkPlus size={16} /> Input & Store Data
+            <BookmarkPlus size={16} />
+            <span>Input Data</span>
           </button>
         </div>
 
@@ -415,79 +458,82 @@ function App() {
             title="Refresh database records"
           >
             <RefreshCw size={15} className={loading ? "spin" : ""} />
-            {loading ? "Syncing..." : "Refresh"}
+            <span>{loading ? "Syncing..." : "Refresh"}</span>
           </button>
           <button
             className="action-btn primary"
             onClick={() => setIsBookModalOpen(true)}
           >
-            <Plus size={16} /> Add Book
+            <Plus size={16} />
+            <span>Add Book</span>
           </button>
         </div>
       </nav>
 
       <main className="container">
-        {/* Hero Banner */}
-        <section className="hero">
-          <div className="hero-copy">
-            <span className="eyebrow">
-              <Sparkles size={15} /> Real-time Cloud Database Powered by Astra DB
-            </span>
+        {/* HERO BANNER - Rendered primarily on Dashboard view */}
+        {activeTab === "dashboard" && (
+          <section className="hero">
+            <div className="hero-copy">
+              <span className="eyebrow">
+                <Sparkles size={15} /> Real-time Cloud Database Powered by Astra DB
+              </span>
 
-            <h1>
-              Every book has a journey.
-              <br />
-              <span>Track, manage, and discover.</span>
-            </h1>
+              <h1>
+                Every book has a journey.
+                <br />
+                <span>Track, manage, and discover.</span>
+              </h1>
 
-            <p>
-              Complete circulation desk & analytics suite. Input new books, issue loans,
-              record returns, and explore Seattle Public Library checkouts with live cloud persistence.
-            </p>
+              <p>
+                Complete circulation desk & analytics suite. Input new books, issue loans,
+                track who borrowed titles, record returns, and explore Seattle Public Library checkouts.
+              </p>
 
-            <div className="hero-cta-group">
-              <button
-                className="hero-link"
-                onClick={() => setActiveTab("entry")}
-              >
-                + Input New Data <ArrowUpRight size={18} />
-              </button>
-              <button
-                className="hero-link-secondary"
-                onClick={() => setActiveTab("circulation")}
-              >
-                Issue / Return Books
-              </button>
-            </div>
-          </div>
-
-          <div className="hero-art">
-            <div className="sun"></div>
-            <div className="art-label">DATABASE • LIVE • CLOUD</div>
-
-            <div className="book-stack">
-              <div className="book book-one">
-                classic<br />catalog
-              </div>
-              <div className="book book-two">
-                borrow<br />records
-              </div>
-              <div className="book book-three">
-                checkout<br />trends
+              <div className="hero-cta-group">
+                <button
+                  className="hero-link"
+                  onClick={() => handleTabChange("circulation")}
+                >
+                  <Users size={16} /> Who Issued Books? <ArrowUpRight size={16} />
+                </button>
+                <button
+                  className="hero-link-secondary"
+                  onClick={() => handleTabChange("entry")}
+                >
+                  + Input New Data
+                </button>
               </div>
             </div>
 
-            <span className="sparkle sparkle-one">✳</span>
-            <span className="sparkle sparkle-two">✦</span>
-            <span className="art-caption">Stored securely in Astra DB ✷</span>
-          </div>
-        </section>
+            <div className="hero-art">
+              <div className="sun"></div>
+              <div className="art-label">DATABASE • LIVE • CLOUD</div>
+
+              <div className="book-stack">
+                <div className="book book-one">
+                  classic<br />catalog
+                </div>
+                <div className="book book-two">
+                  borrow<br />records
+                </div>
+                <div className="book book-three">
+                  checkout<br />trends
+                </div>
+              </div>
+
+              <span className="sparkle sparkle-one">✳</span>
+              <span className="sparkle sparkle-two">✦</span>
+              <span className="art-caption">Stored securely in Astra DB ✷</span>
+            </div>
+          </section>
+        )}
 
         {/* Dynamic Metric Cards */}
         <section className="stats-grid">
           <article
             className="stat-card pink cursor-pointer"
-            onClick={() => setActiveTab("catalog")}
+            onClick={() => handleTabChange("catalog")}
           >
             <div className="stat-top">
               <span>Book Titles</span>
@@ -499,7 +545,7 @@ function App() {
 
           <article
             className="stat-card yellow cursor-pointer"
-            onClick={() => setActiveTab("catalog")}
+            onClick={() => handleTabChange("catalog")}
           >
             <div className="stat-top">
               <span>Copies Available</span>
@@ -516,7 +562,7 @@ function App() {
 
           <article
             className="stat-card purple cursor-pointer"
-            onClick={() => setActiveTab("circulation")}
+            onClick={() => handleTabChange("circulation")}
           >
             <div className="stat-top">
               <span>Active Borrowings</span>
@@ -533,7 +579,7 @@ function App() {
 
           <article
             className="stat-card green cursor-pointer"
-            onClick={() => setActiveTab("dashboard")}
+            onClick={() => handleTabChange("dashboard")}
           >
             <div className="stat-top">
               <span>Analytics Dataset</span>
@@ -551,15 +597,134 @@ function App() {
         {/* ===================== TAB 1: OVERVIEW & ANALYTICS ===================== */}
         {activeTab === "dashboard" && (
           <div className="tab-pane">
-            <section className="data-section" id="top-books">
+            {/* READER CIRCULATION ANALYSIS CHART (WHO ISSUED WHAT) */}
+            <section className="borrower-analytics-section" id="reader-analytics">
               <div className="section-heading">
                 <div>
-                  <span className="eyebrow">POPULAR READING</span>
-                  <h2>Most Checked-Out Titles in Library Circulation</h2>
+                  <span className="eyebrow">READER LOAN INTELLIGENCE</span>
+                  <h2>Who Issued Books? (Circulation by Borrower)</h2>
+                  <p className="section-subtext">
+                    Real-time analysis of members who have borrowed books from your library catalog.
+                  </p>
                 </div>
                 <button
                   className="tab-action-pill"
-                  onClick={() => setActiveTab("entry")}
+                  onClick={() => handleTabChange("circulation")}
+                >
+                  <Users size={14} /> Open Circulation Desk
+                </button>
+              </div>
+
+              {borrowerChartData.length === 0 ? (
+                <div className="empty-chart-box">
+                  <Users size={40} className="empty-icon" />
+                  <h3>No reader loan records yet</h3>
+                  <p>Issue a book to a member in the Circulation Desk, and their checkout analytics will appear right here!</p>
+                  <button
+                    className="action-btn primary"
+                    onClick={() => setIsBorrowModalOpen(true)}
+                  >
+                    <BookMarked size={15} /> Issue First Book
+                  </button>
+                </div>
+              ) : (
+                <div className="borrower-analytics-card">
+                  <div className="chart-header-row">
+                    <span className="chart-title">Checkouts & Returns per Reader</span>
+                    <span className="chart-legend-badge">
+                      <span className="legend-dot orange"></span> Active Loans
+                      <span className="legend-dot green"></span> Returned
+                    </span>
+                  </div>
+
+                  <div className="chart-container">
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart
+                        data={borrowerChartData}
+                        margin={{ top: 15, right: 25, left: 10, bottom: 25 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0e2ec" />
+                        <XAxis
+                          dataKey="name"
+                          tick={{ fontSize: 13, fill: "#271e2e", fontWeight: 700 }}
+                        />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#5d5063" }} />
+                        <Tooltip
+                          content={({ active, payload, label }) => {
+                            if (active && payload && payload.length) {
+                              const d = payload[0].payload;
+                              return (
+                                <div className="custom-chart-tooltip">
+                                  <strong>👤 Reader: {label}</strong>
+                                  <p>Total Checkouts: <b>{d.total}</b></p>
+                                  <p className="out-text">Active Loans: <b>{d.borrowed}</b></p>
+                                  <p className="ret-text">Returned: <b>{d.returned}</b></p>
+                                  {d.titles && d.titles.length > 0 && (
+                                    <div className="tooltip-titles">
+                                      <span>Titles issued:</span>
+                                      <ul>
+                                        {d.titles.map((t, idx) => (
+                                          <li key={idx}>{t}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                        <Legend wrapperStyle={{ paddingTop: 10 }} />
+                        <Bar
+                          dataKey="borrowed"
+                          name="Currently Borrowed"
+                          fill="#d96543"
+                          radius={[6, 6, 0, 0]}
+                        />
+                        <Bar
+                          dataKey="returned"
+                          name="Returned"
+                          fill="#2b8a3e"
+                          radius={[6, 6, 0, 0]}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="borrower-summary-chips">
+                    {borrowerChartData.map((b, idx) => (
+                      <div className="borrower-chip" key={b.name + idx}>
+                        <div className="chip-avatar">
+                          <UserCheck size={16} />
+                        </div>
+                        <div className="chip-info">
+                          <strong className="chip-name">{b.name}</strong>
+                          <span className="chip-status">
+                            {b.borrowed > 0 ? (
+                              <span className="badge-borrowed">{b.borrowed} book{b.borrowed > 1 ? "s" : ""} out</span>
+                            ) : (
+                              <span className="badge-returned">All {b.returned} returned</span>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* SEATTLE PUBLIC LIBRARY HISTORICAL TOP TITLES */}
+            <section className="data-section" id="top-books">
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">SEATTLE PUBLIC LIBRARY DATASET</span>
+                  <h2>Most Checked-Out Titles in Historical Circulation</h2>
+                </div>
+                <button
+                  className="tab-action-pill"
+                  onClick={() => handleTabChange("entry")}
                 >
                   <Plus size={14} /> Add Analytics Entry
                 </button>
@@ -599,6 +764,7 @@ function App() {
               )}
             </section>
 
+            {/* SEATTLE MATERIAL TYPES & MONTHLY TRENDS */}
             <section className="bottom-grid">
               {/* Materials Chart */}
               <article className="data-panel" id="materials">
@@ -618,19 +784,19 @@ function App() {
                           layout="vertical"
                           margin={{ top: 5, right: 15, left: 10, bottom: 5 }}
                         >
-                          <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                          <XAxis type="number" />
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0e2ec" />
+                          <XAxis type="number" tick={{ fill: "#5d5063" }} />
                           <YAxis
                             type="category"
                             dataKey="name"
                             width={95}
-                            tick={{ fontSize: 11 }}
+                            tick={{ fontSize: 11, fill: "#271e2e", fontWeight: 600 }}
                           />
                           <Tooltip />
                           <Bar
                             dataKey="checkouts"
                             name="Total checkouts"
-                            fill="#bb91d1"
+                            fill="#8e44ad"
                             radius={[0, 6, 6, 0]}
                           />
                         </BarChart>
@@ -676,20 +842,20 @@ function App() {
                         data={trendChartData}
                         margin={{ top: 10, right: 10, left: 0, bottom: 35 }}
                       >
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0e2ec" />
                         <XAxis
                           dataKey="name"
                           angle={-35}
                           textAnchor="end"
                           interval={0}
-                          tick={{ fontSize: 10 }}
+                          tick={{ fontSize: 10, fill: "#5d5063" }}
                         />
-                        <YAxis />
+                        <YAxis tick={{ fill: "#5d5063" }} />
                         <Tooltip />
                         <Bar
                           dataKey="checkouts"
                           name="Total checkouts"
-                          fill="#e9a2b5"
+                          fill="#d81b60"
                           radius={[6, 6, 0, 0]}
                         />
                       </BarChart>
@@ -883,7 +1049,7 @@ function App() {
               <div>
                 <span className="eyebrow">CIRCULATION DESK</span>
                 <h2>Active Loans & Borrowing History</h2>
-                <p>Issue books to members, track loan due dates, and mark returns instantly.</p>
+                <p>Issue books to members, track who issued what, monitor due dates, and mark returns instantly.</p>
               </div>
 
               <button
@@ -894,7 +1060,78 @@ function App() {
               </button>
             </div>
 
-            {/* Quick Filter */}
+            {/* WHO ISSUED BOOKS - READER BREAKDOWN CHART */}
+            {borrowerChartData.length > 0 && (
+              <section className="circulation-chart-box">
+                <div className="chart-header-row">
+                  <div>
+                    <h3 className="chart-subhead">📊 Reader Loan Activity: Who Issued Books?</h3>
+                    <p className="chart-subdesc">Overview of all active and returned loans per member.</p>
+                  </div>
+                  <div className="chart-legend-badge">
+                    <span className="legend-dot orange"></span> Active Loans ({borrowRecords.filter(r => r.status === "Borrowed").length})
+                    <span className="legend-dot green"></span> Returned ({borrowRecords.filter(r => r.status === "Returned").length})
+                  </div>
+                </div>
+
+                <div className="chart-container">
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart
+                      data={borrowerChartData}
+                      margin={{ top: 15, right: 20, left: 10, bottom: 25 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0e2ec" />
+                      <XAxis
+                        dataKey="name"
+                        tick={{ fontSize: 13, fill: "#271e2e", fontWeight: 700 }}
+                      />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#5d5063" }} />
+                      <Tooltip
+                        content={({ active, payload, label }) => {
+                          if (active && payload && payload.length) {
+                            const d = payload[0].payload;
+                            return (
+                              <div className="custom-chart-tooltip">
+                                <strong>👤 {label}</strong>
+                                <p>Total Checkouts: <b>{d.total}</b></p>
+                                <p className="out-text">Currently Holding: <b>{d.borrowed}</b></p>
+                                <p className="ret-text">Returned: <b>{d.returned}</b></p>
+                                {d.titles && (
+                                  <div className="tooltip-titles">
+                                    <span>Titles:</span>
+                                    <ul>
+                                      {d.titles.map((t, idx) => (
+                                        <li key={idx}>{t}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Legend wrapperStyle={{ paddingTop: 8 }} />
+                      <Bar
+                        dataKey="borrowed"
+                        name="Currently Borrowed"
+                        fill="#d96543"
+                        radius={[6, 6, 0, 0]}
+                      />
+                      <Bar
+                        dataKey="returned"
+                        name="Returned"
+                        fill="#2b8a3e"
+                        radius={[6, 6, 0, 0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </section>
+            )}
+
+            {/* Quick Filter Tabs */}
             <div className="circulation-filter-tabs">
               <button
                 className={`filter-tab ${
@@ -965,7 +1202,7 @@ function App() {
                           </td>
                           <td>
                             <span className="borrower-badge">
-                              <Users size={12} /> {record.borrower || "Reader"}
+                              <Users size={13} /> {record.borrower || "Reader"}
                             </span>
                           </td>
                           <td>{record.borrow_date || "—"}</td>
@@ -1216,24 +1453,6 @@ function App() {
                     </select>
                   </div>
 
-                  {analyticsForm.analysis_type === "custom_metric" && (
-                    <div className="form-group flex-2">
-                      <label>Metric Name / Label *</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Digital Audio Downloads, Study Room Bookings"
-                        value={analyticsForm.title || ""}
-                        onChange={(e) =>
-                          setAnalyticsForm({
-                            ...analyticsForm,
-                            title: e.target.value,
-                          })
-                        }
-                        required
-                      />
-                    </div>
-                  )}
-
                   {analyticsForm.analysis_type === "top_books" && (
                     <div className="form-group flex-2">
                       <label>Book Title *</label>
@@ -1303,6 +1522,24 @@ function App() {
                         />
                       </div>
                     </>
+                  )}
+
+                  {analyticsForm.analysis_type === "custom_metric" && (
+                    <div className="form-group flex-2">
+                      <label>Metric Name / Label *</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Digital Audio Downloads, Study Room Bookings"
+                        value={analyticsForm.title || ""}
+                        onChange={(e) =>
+                          setAnalyticsForm({
+                            ...analyticsForm,
+                            title: e.target.value,
+                          })
+                        }
+                        required
+                      />
+                    </div>
                   )}
 
                   <div className="form-group">
